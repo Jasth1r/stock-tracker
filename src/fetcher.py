@@ -1,33 +1,20 @@
 import os
 import finnhub
 import pandas as pd
+import yfinance as yf
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = finnhub.Client(api_key=os.getenv("d6jk1d1r01qkvh5q8dsgd6jk1d1r01qkvh5q8dt0"))
+client = finnhub.Client(api_key=os.getenv("FINNHUB_API_KEY"))
 
 def get_quote(symbol: str) -> dict:
     return client.quote(symbol)
 
-def get_candles(symbol: str, resolution='D', count=100) -> pd.DataFrame:
-    import time
-    end = int(time.time())
-    start = end - count * 24 * 3600
-
-    res = client.stock_candles(symbol, resolution, start, end)
-    if res['s'] != 'ok':
-        return pd.DataFrame()
-
-    df = pd.DataFrame({
-        'timestamp': pd.to_datetime(res['t'], unit='s'),
-        'open':  res['o'],
-        'high':  res['h'],
-        'low':   res['l'],
-        'close': res['c'],
-        'volume':res['v']
-    })
-    return df.set_index('timestamp')
+def get_candles(symbol: str, period='6mo') -> pd.DataFrame:
+    df = yf.download(symbol, period=period, auto_adjust=True)
+    df.columns = [col[0].lower() for col in df.columns]
+    return df
 
 if __name__ == "__main__":
     print(get_quote("AAPL"))
