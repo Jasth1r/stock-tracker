@@ -1,73 +1,59 @@
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, mean_absolute_error, r2_score
-from src.fetcher import get_candles
-from src.processor import add_features
-SYMBOLS = ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN', 'META', 'NVDA',
-           'NFLX', 'AMD', 'INTC', 'BABA', 'UBER', 'SHOP']
 
-FEATURES = ['volatility_20', 'ma_5', 'ma_20', 'rsi', 'volume',
-            'daily_return', 'volume_change', 'volume_spike',
-            'return_3d', 'return_5d']
+from processor import RISK_FEATURES
 
-TARGET_CLASS = 'high_risk'
-TARGET_REG   = 'next_return'
+TARGET = "risk_level"
+RISK_LABELS = {0: "Low", 1: "Medium", 2: "High"}
 
-def load_data():
-    frames = []
-    for symbol in SYMBOLS:
-        df = get_candles(symbol, period='5y')
-        df = add_features(df)
-        frames.append(df)
-    return pd.concat(frames)
 
-def train(df: pd.DataFrame):
-    X = df[FEATURES]
+def train(
+    df: pd.DataFrame,
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> RandomForestClassifier:
+    for col in RISK_FEATURES + [TARGET]:
+        if col not in df.columns:
+            raise ValueError(f"Missing column for risk model: {col}")
 
-    X_train, X_test, _, _ = train_test_split(
-        X, X, test_size=0.2, random_state=42, shuffle=False
+    train_df = df.dropna(subset=[TARGET])
+    if len(train_df) < 50:
+        raise ValueError("Not enough rows with risk_level for training")
+
+    X = train_df[RISK_FEATURES]
+    y = train_df[TARGET]
+
+    X_train, _, y_train, _ = train_test_split(
+        X,
+        y,
+        test_size=test_size,
+        random_state=random_state,
+        shuffle=False,
     )
 
-    # --- Random Forest Classifier ---
-    y_class = df[TARGET_CLASS]
-    y_train_c, y_test_c = train_test_split(y_class, test_size=0.2, random_state=42, shuffle=False)
-
-    classifier = RandomForestClassifier(
+    model = RandomForestClassifier(
         n_estimators=200,
-        random_state=42,
-        class_weight='balanced'
+        max_depth=None,
+        random_state=random_state,
     )
-    classifier.fit(X_train, y_train_c)
-    y_pred_c = classifier.predict(X_test)
+    model.fit(X_train, y_train)
+    return model
 
-    print("=== Random Forest Classifier ===")
-    print(classification_report(y_test_c, y_pred_c))
 
-    # --- Linear Regression ---
-    y_reg = df[TARGET_REG]
-    y_train_r, y_test_r = train_test_split(y_reg, test_size=0.2, random_state=42, shuffle=False)
+def predict_risk(model: RandomForestClassifier, latest_row: pd.DataFrame) -> dict:
+    if latest_row is None or latest_row.empty:
+        return {"level": "Unknown", "confidence": 0.0, "probabilities": None}
 
-    regressor = LinearRegression()
-    regressor.fit(X_train, y_train_r)
-    y_pred_r = regressor.predict(X_test)
+    X = latest_row[RISK_FEATURES]
+    proba = model.predict_proba(X)[0]
+    pred_class = int(model.predict(X)[0])
+    confidence = float(proba[pred_class])
 
-    print("=== Linear Regression (next day return) ===")
-    print(f"MAE:  {mean_absolute_error(y_test_r, y_pred_r):.4f}")
-    print(f"R²:   {r2_score(y_test_r, y_pred_r):.4f}")
-
-    return classifier, regressor
-
-def predict_risk(classifier, regressor, latest_row: pd.DataFrame) -> str:
-    prob         = classifier.predict_proba(latest_row[FEATURES])[0][1]
-    label        = "🔴 HIGH RISK" if prob > 0.5 else "🟢 LOW RISK"
-    predicted_return = regressor.predict(latest_row[FEATURES])[0]
-    return (
-        f"{label}  (confidence: {prob:.1%})\n"
-        f"📈 Predicted next day return: {predicted_return:.2%}"
-    )
-
-if __name__ == "__main__":
-    df = load_data()
-    classifier, regressor = train(df)
+    return {
+        "level": RISK_LABELS.get(pred_class, "Unknown"),
+        "confidence": round(confidence, 3),
+        "probabilities": {
+            RISK_LABELS[i]: round(float(p), 3) for i, p in enumerate(proba)
+        },
+    }
